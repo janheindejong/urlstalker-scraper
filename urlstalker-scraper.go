@@ -10,23 +10,10 @@ import (
 	"time"
 )
 
-func main() {
-
-	host := "http://localhost:8000"
-
-	// Get resources
-	resources := GetResources(host)
-	for _, resource := range *resources {
-		log.Println(resource.Path)
-	}
-
-	// For each resource scrape URL
-	snapshots := GetSnapShots(resources)
-
-	// For each resource post result
-	PostSnapShots(host, snapshots)
-
-}
+// TODO Make recognize change in snapshot
+// TODO Fix parsing of datetime
+// TODO Add e-mail functionality
+// TODO Implement concurrency
 
 type SnapShot struct {
 	DateTime   time.Time `json:"datetime"`
@@ -36,64 +23,79 @@ type SnapShot struct {
 }
 
 type Resource struct {
-	Path      string     `json:"path"`
-	Id        int        `json:"id"`
-	Snapshots []SnapShot `json:"Snapshots"`
+	Path string `json:"path"`
+	Id   int    `json:"id"`
+	// Snapshots []SnapShot `json:"Snapshots"`
 }
 
-func GetResources(host string) *[]Resource {
-	resp := getResponse(host + "/resource")
-	defer resp.Body.Close()
-	return parseResponse(resp)
+type UrlStalkerApiClient struct {
+	host string
 }
 
-func getResponse(url string) *http.Response {
-	resp, err := http.Get(url)
+func main() {
+
+	client := UrlStalkerApiClient{host: "http://localhost:8000"}
+
+	// Get resources
+	resources, err := client.GetResources()
 	if err != nil {
-		log.Print(err)
+		log.Fatal(err)
 	}
-	return resp
-}
 
-func parseResponse(resp *http.Response) *[]Resource {
-	var resources []Resource
-	err := json.NewDecoder(resp.Body).Decode(&resources)
-	if err != nil {
-		log.Print(err)
-	}
-	return &resources
-}
-
-func GetSnapShots(resources *[]Resource) *map[int]SnapShot {
-	snapshots := make(map[int]SnapShot)
+	// For each resource scrape URL and post result
 	for _, resource := range *resources {
-		resp, err := http.Get(resource.Path)
+		snapshot, err := CreateSnapShot(&resource)
 		if err != nil {
-			log.Print(err)
+			log.Println(err)
 			continue
 		}
-		snapshots[resource.Id] = *createSnapShot(resp)
+		err = client.PostSnapShot(&resource, snapshot)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
 	}
-	return &snapshots
+
 }
 
-func createSnapShot(resp *http.Response) *SnapShot {
-	b, _ := io.ReadAll(resp.Body)
+func (c UrlStalkerApiClient) GetResources() (*[]Resource, error) {
+	// Make HTTP call to API
+	resp, err := http.Get(c.host + "/resource")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	// Parse response
+	var resources []Resource
+	err = json.NewDecoder(resp.Body).Decode(&resources)
+	return &resources, err
+}
+
+func (c UrlStalkerApiClient) PostSnapShot(resource *Resource, snapshot *SnapShot) error {
+	log.Printf(`Posting snapshot for resource with path "%v"`, resource.Path)
+	url := c.host + fmt.Sprintf("/resource/%v/snapshot", resource.Id)
+	jsonValue, _ := json.Marshal(snapshot)
+	_, err := http.Post(url, "application/json", bytes.NewBuffer(jsonValue))
+	return err
+}
+
+func CreateSnapShot(resource *Resource) (*SnapShot, error) {
+	log.Printf(`Creating snapshot for resource with path "%v"`, resource.Path)
+	// Make call to resource path
+	resp, err := http.Get(resource.Path)
+	if err != nil {
+		return nil, err
+	}
+	// Read response body
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	// Create new snapshot object
 	snapshot := SnapShot{
 		StatusCode: resp.StatusCode,
 		DateTime:   time.Now(),
 		Response:   string(b),
 	}
-	return &snapshot
-}
-
-func PostSnapShots(host string, snapshots *map[int]SnapShot) {
-	for i, snapshot := range *snapshots {
-		url := host + fmt.Sprintf("/resource/%v/snapshot", i)
-		jsonValue, _ := json.Marshal(snapshot)
-		_, err := http.Post(url, "application/json", bytes.NewBuffer(jsonValue))
-		if err != nil {
-			log.Print(err)
-		}
-	}
+	return &snapshot, nil
 }
