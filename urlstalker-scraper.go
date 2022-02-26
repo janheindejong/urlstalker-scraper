@@ -23,9 +23,9 @@ type SnapShot struct {
 }
 
 type Resource struct {
-	Path string `json:"path"`
-	Id   int    `json:"id"`
-	// Snapshots []SnapShot `json:"Snapshots"`
+	Path      string     `json:"path"`
+	Id        int        `json:"id"`
+	Snapshots []SnapShot `json:"Snapshots"`
 }
 
 type UrlStalkerApiClient struct {
@@ -44,7 +44,7 @@ func main() {
 
 	// For each resource scrape URL and post result
 	for _, resource := range *resources {
-		snapshot, err := CreateSnapShot(&resource)
+		snapshot, err := resource.CreateSnapShot()
 		if err != nil {
 			log.Println(err)
 			continue
@@ -79,13 +79,14 @@ func (c UrlStalkerApiClient) PostSnapShot(resource *Resource, snapshot *SnapShot
 	return err
 }
 
-func CreateSnapShot(resource *Resource) (*SnapShot, error) {
+func (resource Resource) CreateSnapShot() (*SnapShot, error) {
 	log.Printf(`Creating snapshot for resource with path "%v"`, resource.Path)
 	// Make call to resource path
 	resp, err := http.Get(resource.Path)
 	if err != nil {
 		return nil, err
 	}
+	defer resp.Body.Close()
 	// Read response body
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
