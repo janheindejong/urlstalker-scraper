@@ -1,3 +1,7 @@
+/*
+Runs webscraper
+*/
+
 package main
 
 import (
@@ -7,18 +11,19 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
 
-// TODO Make recognize change in snapshot
-// TODO Fix parsing of datetime
 // TODO Add e-mail functionality
 // TODO containerize
 
 func main() {
 
-	db := UrlStalkerApiClient{host: "http://localhost:8000"}
+	host := os.Args[1]
+
+	db := UrlStalkerDbApi{host: host}
 
 	// Get resources
 	resources, err := db.GetResources()
@@ -26,38 +31,51 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// For each resource scrape URL and post result
+	// Inspect each resource and save a snapshot to the DB if changed
 	var wg sync.WaitGroup
 	for _, resource := range *resources {
 		wg.Add(1)
 		resource := resource
-		go ScrapeAndPost(&wg, &resource, &db)
+		go SnapAndSaveIfChanged(&wg, &resource, &db)
 	}
 	wg.Wait()
 }
 
-func ScrapeAndPost(wg *sync.WaitGroup, resource *Resource, db *UrlStalkerApiClient) {
+func SnapAndSaveIfChanged(wg *sync.WaitGroup, resource *Resource, db *UrlStalkerDbApi) {
 	defer wg.Done()
 
-	snapshot, err := resource.CreateSnapShot()
+	// Create a new snapshot of the resource
+	newSnapShot, err := resource.Snap()
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	err = db.PostSnapShot(resource, snapshot)
-	if err != nil {
-		log.Println(err)
-		return
+
+	// Append snapshot and post if has changed
+	if newSnapShot.ResponseBody != resource.MostRecentSnapShot().ResponseBody {
+		resource.Snapshots = append(resource.Snapshots, *newSnapShot)
+		err = db.SaveSnapShot(newSnapShot)
+		if err != nil {
+			log.Println(err)
+		}
+	} else {
+		log.Printf(`Resource with path "%v" has not changed`, resource.Path)
 	}
+
 }
 
-type UrlStalkerApiClient struct {
+type UrlStalkerDbApi struct {
+	// UrlStalkerDbApi is used for communicating with the URL stalker
+	// database (currently implemented as a REST API)
 	host string
 }
 
-func (c UrlStalkerApiClient) GetResources() (*[]Resource, error) {
+func (api UrlStalkerDbApi) GetResources() (*[]Resource, error) {
+	// Gets all the resources in the database
+	log.Printf(`Getting resources from database at "%v"`, api.host)
+
 	// Make HTTP call to API
-	resp, err := http.Get(c.host + "/resource")
+	resp, err := http.Get(api.host + "/resource")
 	if err != nil {
 		return nil, err
 	}
@@ -68,9 +86,10 @@ func (c UrlStalkerApiClient) GetResources() (*[]Resource, error) {
 	return &resources, err
 }
 
-func (c UrlStalkerApiClient) PostSnapShot(resource *Resource, snapshot *SnapShot) error {
-	log.Printf(`Posting snapshot for resource with path "%v"`, resource.Path)
-	url := c.host + fmt.Sprintf("/resource/%v/snapshot", resource.Id)
+func (api UrlStalkerDbApi) SaveSnapShot(snapshot *SnapShot) error {
+	// Post a new snapshot for a given resource
+	log.Printf(`Posting snapshot for resource with path "%v"`, snapshot.Resource.Path)
+	url := api.host + fmt.Sprintf("/resource/%v/snapshot", snapshot.Resource.Id)
 	jsonValue, err := json.Marshal(snapshot)
 	if err != nil {
 		return err
@@ -80,12 +99,12 @@ func (c UrlStalkerApiClient) PostSnapShot(resource *Resource, snapshot *SnapShot
 }
 
 type Resource struct {
-	Path string `json:"path"`
-	Id   int    `json:"id"`
-	// Snapshots []SnapShot `json:"Snapshots"`
+	Path      string     `json:"path"`
+	Id        int        `json:"id"`
+	Snapshots []SnapShot `json:"snapshots"`
 }
 
-func (resource Resource) CreateSnapShot() (*SnapShot, error) {
+func (resource Resource) Snap() (*SnapShot, error) {
 	log.Printf(`Creating snapshot for resource with path "%v"`, resource.Path)
 	// Make call to resource path
 	resp, err := http.Get(resource.Path)
@@ -103,8 +122,13 @@ func (resource Resource) CreateSnapShot() (*SnapShot, error) {
 		StatusCode:   resp.StatusCode,
 		DateTime:     time.Now(),
 		ResponseBody: string(b),
+		Resource:     &resource,
 	}
 	return &snapshot, nil
+}
+
+func (resource Resource) MostRecentSnapShot() *SnapShot {
+	return &resource.Snapshots[len(resource.Snapshots)-1]
 }
 
 type SnapShot struct {
@@ -112,4 +136,5 @@ type SnapShot struct {
 	StatusCode   int       `json:"status_code"`
 	ResponseBody string    `json:"response"`
 	Id           int       `json:"id"`
+	Resource     *Resource
 }
