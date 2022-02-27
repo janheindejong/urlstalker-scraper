@@ -7,23 +7,27 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"sync"
 	"time"
 )
 
 // TODO Add e-mail functionality
-// TODO containerize
+// TODO Add tests
 
 func main() {
 
-	host := os.Args[1]
-
-	db := UrlStalkerDbApi{host: host}
+	// Parse command line arguments
+	host := flag.String("host", "", "Database host")
+	flag.Parse()
+	if *host == "" {
+		log.Fatal(`Please supply a database host using the "-host" flag`)
+	}
+	db := UrlStalkerDbApi{host: *host}
 
 	// Get resources
 	resources, err := db.GetResources()
@@ -105,7 +109,7 @@ type Resource struct {
 }
 
 func (resource Resource) Snap() (*SnapShot, error) {
-	log.Printf(`Creating snapshot for resource with path "%v"`, resource.Path)
+	log.Printf(`Creating snapshot of "%v"`, resource.Path)
 	// Make call to resource path
 	resp, err := http.Get(resource.Path)
 	if err != nil {
