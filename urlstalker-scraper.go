@@ -7,55 +7,52 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
 // TODO Make recognize change in snapshot
 // TODO Fix parsing of datetime
 // TODO Add e-mail functionality
-// TODO Implement concurrency
-
-type SnapShot struct {
-	DateTime   time.Time `json:"datetime"`
-	StatusCode int       `json:"status_code"`
-	Response   string    `json:"response"`
-	Id         int       `json:"id"`
-}
-
-type Resource struct {
-	Path      string     `json:"path"`
-	Id        int        `json:"id"`
-	Snapshots []SnapShot `json:"Snapshots"`
-}
-
-type UrlStalkerApiClient struct {
-	host string
-}
+// TODO containerize
 
 func main() {
 
-	client := UrlStalkerApiClient{host: "http://localhost:8000"}
+	db := UrlStalkerApiClient{host: "http://localhost:8000"}
 
 	// Get resources
-	resources, err := client.GetResources()
+	resources, err := db.GetResources()
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// For each resource scrape URL and post result
+	var wg sync.WaitGroup
 	for _, resource := range *resources {
-		snapshot, err := resource.CreateSnapShot()
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-		err = client.PostSnapShot(&resource, snapshot)
-		if err != nil {
-			log.Println(err)
-			continue
-		}
+		wg.Add(1)
+		resource := resource
+		go ScrapeAndPost(&wg, &resource, &db)
 	}
+	wg.Wait()
+}
 
+func ScrapeAndPost(wg *sync.WaitGroup, resource *Resource, db *UrlStalkerApiClient) {
+	defer wg.Done()
+
+	snapshot, err := resource.CreateSnapShot()
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	err = db.PostSnapShot(resource, snapshot)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+}
+
+type UrlStalkerApiClient struct {
+	host string
 }
 
 func (c UrlStalkerApiClient) GetResources() (*[]Resource, error) {
@@ -74,9 +71,18 @@ func (c UrlStalkerApiClient) GetResources() (*[]Resource, error) {
 func (c UrlStalkerApiClient) PostSnapShot(resource *Resource, snapshot *SnapShot) error {
 	log.Printf(`Posting snapshot for resource with path "%v"`, resource.Path)
 	url := c.host + fmt.Sprintf("/resource/%v/snapshot", resource.Id)
-	jsonValue, _ := json.Marshal(snapshot)
-	_, err := http.Post(url, "application/json", bytes.NewBuffer(jsonValue))
+	jsonValue, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+	_, err = http.Post(url, "application/json", bytes.NewBuffer(jsonValue))
 	return err
+}
+
+type Resource struct {
+	Path string `json:"path"`
+	Id   int    `json:"id"`
+	// Snapshots []SnapShot `json:"Snapshots"`
 }
 
 func (resource Resource) CreateSnapShot() (*SnapShot, error) {
@@ -94,9 +100,16 @@ func (resource Resource) CreateSnapShot() (*SnapShot, error) {
 	}
 	// Create new snapshot object
 	snapshot := SnapShot{
-		StatusCode: resp.StatusCode,
-		DateTime:   time.Now(),
-		Response:   string(b),
+		StatusCode:   resp.StatusCode,
+		DateTime:     time.Now(),
+		ResponseBody: string(b),
 	}
 	return &snapshot, nil
+}
+
+type SnapShot struct {
+	DateTime     time.Time `json:"datetime"`
+	StatusCode   int       `json:"status_code"`
+	ResponseBody string    `json:"response"`
+	Id           int       `json:"id"`
 }
